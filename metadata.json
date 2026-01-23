@@ -1,0 +1,9 @@
+{
+  "name": "Think about Books",
+  "description": "An advanced literary companion that finds hardcopy books in nearby libraries and bookstores, locates softcopies online, and offers a conversational AI librarian experience.",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation",
+    "camera"
+  ]
+}
