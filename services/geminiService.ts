@@ -11,10 +11,10 @@ export const searchBookDetails = async (
 ): Promise<BookResult> => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
 
-  // 1. Get Hardcopy Locations using Maps Grounding (Gemini 2.5 Flash)
+  // 1. Get Hardcopy Locations using Maps Grounding (Requires 2.5 series)
   const mapsResponse = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: `Find libraries or bookstores near me that might have "${query}".`,
+    model: "gemini-2.5-flash-native-audio-preview-12-2025",
+    contents: `Find libraries or bookstores near me that stock or archive "${query}". Look for hardcopy availability.`,
     config: {
       tools: [{ googleMaps: {} }],
       toolConfig: {
@@ -29,46 +29,46 @@ export const searchBookDetails = async (
   });
 
   const locations: BookLocation[] = (mapsResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [])
-    .filter(chunk => chunk.maps)
+    .filter(chunk => !!chunk.maps)
     .map(chunk => ({
-      name: chunk.maps.title || "Library/Store",
-      uri: chunk.maps.uri,
-      type: chunk.maps.uri.includes("library") ? 'library' : 'bookstore'
+      name: chunk.maps!.title || "Library/Store",
+      uri: chunk.maps!.uri || "",
+      type: (chunk.maps!.uri || "").toLowerCase().includes("library") ? 'library' : 'bookstore'
     }));
 
-  // 2. Get Softcopy links using Search Grounding (Gemini 3 Flash Preview)
+  // 2. Get Softcopy links using Search Grounding
   const searchResponse = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
-    contents: `Find legitimate softcopy sources or ebook purchase links for "${query}".`,
+    contents: `Find legitimate digital archives, softcopy sources, or ebook purchase links for the journal or book: "${query}".`,
     config: {
       tools: [{ googleSearch: {} }],
     },
   });
 
   const softcopies: SoftcopyLink[] = (searchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [])
-    .filter(chunk => chunk.web)
+    .filter(chunk => !!chunk.web)
     .map(chunk => ({
-      title: chunk.web.title || "E-Book Source",
-      uri: chunk.web.uri
+      title: chunk.web!.title || "Digital Archive",
+      uri: chunk.web!.uri || ""
     }));
 
-  // 3. Get concise metadata including author bio and awards
+  // 3. Get metadata
   const infoResponse = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
-    contents: `You are a book expert. For the book "${query}", provide details in ${language}.`,
+    contents: `Provide metadata for "${query}" in ${language}. If it is a journal, include its publication frequency and field of study.`,
     config: {
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          author: { type: Type.STRING },
+          author: { type: Type.STRING, description: "Author or Chief Editor" },
           summary: { type: Type.STRING, description: "A concise 2-sentence summary." },
-          isbn: { type: Type.STRING, description: "Standard ISBN-13." },
-          authorBio: { type: Type.STRING, description: "A brief professional biography of the author." },
+          isbn: { type: Type.STRING, description: "Standard ISBN or ISSN." },
+          authorBio: { type: Type.STRING, description: "Brief background of author/publication." },
           awards: { 
             type: Type.ARRAY, 
             items: { type: Type.STRING },
-            description: "A list of notable awards or recognition the book has received." 
+            description: "Notable recognition or impact factor." 
           }
         },
         required: ["author", "summary", "isbn", "authorBio", "awards"]
@@ -78,28 +78,28 @@ export const searchBookDetails = async (
 
   let bookInfo;
   try {
-    bookInfo = JSON.parse(infoResponse.text || "{}");
+    const text = infoResponse.text;
+    bookInfo = JSON.parse(text || "{}");
   } catch (e) {
     bookInfo = {
-      author: "Unknown Author",
-      summary: "No summary found.",
+      author: "Various Contributors",
+      summary: "Search details unavailable.",
       isbn: "",
-      authorBio: "No biography available.",
+      authorBio: "Information pending.",
       awards: []
     };
   }
   
   const { author, summary, isbn, authorBio, awards } = bookInfo;
 
-  // Use Open Library Covers API if ISBN is available
-  const coverImageUrl = isbn 
+  const coverImageUrl = isbn && !isbn.includes('-')
     ? `https://covers.openlibrary.org/b/isbn/${isbn}-L.jpg`
-    : `https://images.placeholders.dev/?width=400&height=600&text=${encodeURIComponent(query)}&bgColor=%23f3f4f6&textColor=%239ca3af`;
+    : `https://images.placeholders.dev/?width=400&height=600&text=${encodeURIComponent(query)}&bgColor=%231e293b&textColor=%23fbbf24`;
 
   return {
     title: query,
-    author,
-    summary,
+    author: author || "Unknown",
+    summary: summary || "No summary available.",
     authorBio,
     awards,
     locations,
@@ -112,7 +112,7 @@ export const getDetailedSummary = async (query: string, language: Language): Pro
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
-    contents: `Provide a detailed, multi-paragraph summary and literary analysis of the book "${query}" in ${language}. Include key themes, plot overview (no spoilers), and why it is significant.`,
+    contents: `Provide a detailed literary or scholarly analysis of "${query}" in ${language}. Include significance, key themes, and intended audience.`,
   });
   return response.text || "Detailed summary unavailable.";
 };
@@ -122,7 +122,7 @@ export const chatWithLibrarian = async (message: string, language: Language, use
   const model = "gemini-3-pro-preview";
   
   const config: any = {
-    systemInstruction: `You are a professional librarian with deep knowledge of literature. You provide thoughtful, accurate, and helpful advice. IMPORTANT: Always respond in ${language}. If the user asks in another language, you must still respond in ${language}.`
+    systemInstruction: `You are a professional research librarian. You specialize in locating rare journals and hardcopy books. You are helpful, precise, and academic. IMPORTANT: Respond in ${language}.`
   };
 
   if (useThinking) {
@@ -142,7 +142,7 @@ export const getBookRecommendations = async (history: string[], language: Langua
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
-    contents: `Based on the following book history: ${history.join(', ')}. Recommend 3 unique books the user might enjoy. Provide the title and a very short reason in ${language}.`,
+    contents: `Based on these interests: ${history.join(', ')}. Recommend 3 related journals or books. Respond in ${language}.`,
     config: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -173,7 +173,7 @@ export const transcribeAudio = async (base64Audio: string, mimeType: string = 'a
     contents: {
       parts: [
         { inlineData: { data: base64Audio, mimeType } },
-        { text: "Identify the book name or author mentioned in this audio. Return only the name." }
+        { text: "Extract the name of the book or journal mentioned." }
       ]
     }
   });
@@ -187,7 +187,7 @@ export const analyzeBookCover = async (base64Image: string, language: Language) 
     contents: {
       parts: [
         { inlineData: { data: base64Image, mimeType: 'image/jpeg' } },
-        { text: `Identify this book cover. Provide the title, author, and a short explanation in ${language}.` }
+        { text: `Identify this publication. Title, Author, and a summary in ${language}.` }
       ]
     }
   });
